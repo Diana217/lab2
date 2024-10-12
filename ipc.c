@@ -14,6 +14,7 @@
 #define SHM_NAME "/my_shared_memory"
 #define MMAP_FILE "/tmp/mmap_test_file"
 #define FILE_IPC_PATH "/tmp/ipc_file_test"
+#define FIFO_PATH "/tmp/my_fifo"
 #define MESSAGE_SIZE (1024 * 1024) // 1MB
 #define ITERATIONS 100
 #define SEM_NAME "/my_semaphore"
@@ -205,64 +206,19 @@ IPC_Result test_file_rw() {
     pid_t pid = fork();
     struct timespec start, end;
     if (pid == 0) {
-        int read_fd = open(FILE_IPC_PATH, O_RDONLY);
-        if (read_fd == -1) {
-            perror("open (read)");
-            exit(EXIT_FAILURE);
-        }
-        char *buffer = malloc(MESSAGE_SIZE);
-        if (buffer == NULL) {
-            perror("malloc");
-            close(read_fd);
-            exit(EXIT_FAILURE);
-        }
+        char buffer[MESSAGE_SIZE];
         for (int i = 0; i < ITERATIONS; i++) {
-            ssize_t bytes_read = read(read_fd, buffer, MESSAGE_SIZE);
-            if (bytes_read == -1) {
-                perror("read");
-                free(buffer);
-                close(read_fd);
-                exit(EXIT_FAILURE);
-            } else if (bytes_read == 0) {
-                // EOF
-                break;
-            }
+            lseek(fd, 0, SEEK_SET);
+            read(fd, buffer, MESSAGE_SIZE);
         }
-        free(buffer);
-        close(read_fd);
+        close(fd);
         exit(EXIT_SUCCESS);
     } else {
-        char *data = malloc(MESSAGE_SIZE);
-        if (data == NULL) {
-            perror("malloc");
-            close(fd);
-            unlink(FILE_IPC_PATH);
-            exit(EXIT_FAILURE);
-        }
-        memset(data, 'A', MESSAGE_SIZE);
-
         clock_gettime(CLOCK_MONOTONIC, &start);
         for (int i = 0; i < ITERATIONS; i++) {
-            ssize_t bytes_written = write(fd, data, MESSAGE_SIZE);
-            if (bytes_written == -1) {
-                perror("write");
-                free(data);
-                close(fd);
-                unlink(FILE_IPC_PATH);
-                exit(EXIT_FAILURE);
-            }
-            // Оновлення позиції файлу для уникнення перекриття
-            if (lseek(fd, 0, SEEK_CUR) == -1) {
-                perror("lseek");
-                free(data);
-                close(fd);
-                unlink(FILE_IPC_PATH);
-                exit(EXIT_FAILURE);
-            }
+            write(fd, "A", MESSAGE_SIZE);
         }
         clock_gettime(CLOCK_MONOTONIC, &end);
-        free(data);
-        close(fd);
         wait(NULL);
         double time_taken = get_time_diff(start, end);
         result.total_time = time_taken;
@@ -271,21 +227,66 @@ IPC_Result test_file_rw() {
         printf("File Open/Read/Write: Загальний час: %.6f секунд\n", result.total_time);
         printf("File Open/Read/Write: Середній час на ітерацію: %.6f секунд\n", result.avg_latency);
         printf("File Open/Read/Write: Пропускна здатність: %.2f байт/секунду\n", result.throughput);
+        close(fd);
         unlink(FILE_IPC_PATH);
     }
     return result;
 }
 
-int main() {
-    IPC_Result results[4];
+// FIFO (іменовані канали) IPC
+IPC_Result test_fifo() {
+    IPC_Result result;
+    strcpy(result.method_name, "FIFO (іменовані канали)");
+    result.channel_capacity = MESSAGE_SIZE;
 
-    results[0] = test_shared_memory();
+    printf("Тестування FIFO IPC...\n");
+    // Створення іменованого каналу
+    if (mkfifo(FIFO_PATH, 0666) == -1 && errno != EEXIST) {
+        perror("mkfifo");
+        exit(EXIT_FAILURE);
+    }
+
+    pid_t pid = fork();
+    struct timespec start, end;
+    if (pid == 0) {
+        int fd = open(FIFO_PATH, O_RDONLY);
+        char buffer[MESSAGE_SIZE];
+        for (int i = 0; i < ITERATIONS; i++) {
+            read(fd, buffer, MESSAGE_SIZE);
+        }
+        close(fd);
+        exit(EXIT_SUCCESS);
+    } else {
+        int fd = open(FIFO_PATH, O_WRONLY);
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        for (int i = 0; i < ITERATIONS; i++) {
+            write(fd, "A", MESSAGE_SIZE);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        close(fd);
+        wait(NULL);
+        double time_taken = get_time_diff(start, end);
+        result.total_time = time_taken;
+        result.avg_latency = time_taken / ITERATIONS;
+        result.throughput = (double)(MESSAGE_SIZE * ITERATIONS) / time_taken;
+        printf("FIFO: Загальний час: %.6f секунд\n", result.total_time);
+        printf("FIFO: Середній час на ітерацію: %.6f секунд\n", result.avg_latency);
+        printf("FIFO: Пропускна здатність: %.2f байт/секунду\n", result.throughput);
+        unlink(FIFO_PATH);
+    }
+    return result;
+}
+
+int main() {
+    test_shared_memory();
     printf("\n");
-    results[1] = test_mmap_anonymous();
+    test_mmap_anonymous();
     printf("\n");
-    results[2] = test_mmap_file_backed();
+    test_mmap_file_backed();
     printf("\n");
-    results[3] = test_file_rw();
+    test_file_rw();
+    printf("\n");
+    test_fifo();
     printf("\n");
 
     return 0;
